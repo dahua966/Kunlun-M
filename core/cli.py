@@ -49,9 +49,11 @@ def check_scantask(task_name, target_path, parameter_config):
 
     if s:
         logger.warning("[INIT] ScanTask for {} has been executed.".format(task_name))
-        logger.warning("[INIT] whether rescan Task {}?(Y/N) (Default N)".format(task_name))
+        logger.warning("[INIT] whether rescan Task {}?(Y/N) (Default Y)".format(task_name))
 
-        if input().lower() != 'y':
+        #if input().lower() == 'n':
+        #不想按回车了
+        if False:
             logger.warning("[INIT] whether Show Last Scan Result?(Y/N) (Default Y)")
 
             if input().lower() != 'n':

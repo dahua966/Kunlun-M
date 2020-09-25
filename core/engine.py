@@ -178,6 +178,8 @@ def scan(target_directory, a_sid=None, s_sid=None, special_rules=None, language=
     async def start_scan(target_directory, rule, files, language, tamper_name):
 
         result = scan_single(target_directory, rule, files, language, tamper_name, is_unconfirm, newcore_function_list)
+        #存储扫描结果，是个列表,每个元素是Kunlun_M.const.VulnerabilityResult object
+        #print("scan result:", result)
         store(result)
 
     if len(rules) == 0:
@@ -187,6 +189,7 @@ def scan(target_directory, a_sid=None, s_sid=None, special_rules=None, language=
     push_rules = []
     scan_list = []
 
+    #根据每个rule进行扫描
     for idx, single_rule in enumerate(sorted(rules.keys())):
 
         # init rule class
@@ -204,6 +207,7 @@ def scan(target_directory, a_sid=None, s_sid=None, special_rules=None, language=
             language=rule.language
         ))
         # result = scan_single(target_directory, rule, files, language, tamper_name)
+        #print("scan list append:", target_directory, rule, files)
         scan_list.append(start_scan(target_directory, rule, files, language, tamper_name))
         # store(result)
 
@@ -221,7 +225,9 @@ def scan(target_directory, a_sid=None, s_sid=None, special_rules=None, language=
 
     table.align = 'l'
     trigger_rules = []
+    #print("find_vulnerabilities:", find_vulnerabilities)
     for idx, x in enumerate(find_vulnerabilities):
+        #print(x.convert_to_dict())
         trigger = '{fp}:{ln}'.format(fp=x.file_path, ln=x.line_number)
         commit = u'@{author}'.format(author=x.commit_author)
         try:
@@ -506,6 +512,7 @@ class SingleRule(object):
 
         origin_vulnerabilities = origin_results
         for index, origin_vulnerability in enumerate(origin_vulnerabilities):
+            #print("origin_vulnerability:", origin_vulnerability)
             logger.debug(
                 '[CVI-{cvi}] [ORIGIN] {line}'.format(cvi=self.sr.svid, line=": ".join(list(origin_vulnerability))))
             if origin_vulnerability == ():
@@ -517,50 +524,62 @@ class SingleRule(object):
                 continue
             is_test = False
             try:
+                #进入分析点
                 datas = Core(self.target_directory, vulnerability, self.sr, 'project name',
                              ['whitelist1', 'whitelist2'], test=is_test, index=index,
                              files=self.files, languages=self.languages, tamper_name=self.tamper_name,
                              is_unconfirm=self.is_unconfirm).scan()
+                print("[*]Scan results datas:\n", datas)
+                if not isinstance(datas, list):
+                    raise SyntaxError('Can not parse')
                 data = ""
 
-                if len(datas) == 3:
-                    is_vulnerability, reason, data = datas
+                #Core.scan()的结果在这里
+                for d in datas:
+                    if len(d) == 3:
+                        is_vulnerability, reason, data = d
 
-                    if "New Core" not in reason:
-                        code = "Code: {}".format(origin_vulnerability[2].strip(" "))
-                        file_path = os.path.normpath(origin_vulnerability[0])
-                        data.insert(1, ("NewScan", code, origin_vulnerability[0], origin_vulnerability[1]))
+                        if "New Core" not in reason:
+                            code = "Code: {}".format(origin_vulnerability[2].strip(" "))
+                            file_path = os.path.normpath(origin_vulnerability[0])
+                            #插入调用链的首位，origin_vul即正则匹配的结果
+                            data.insert(1, ("NewScan", code, origin_vulnerability[0], origin_vulnerability[1]))
 
-                elif len(datas) == 2:
-                    is_vulnerability, reason = datas
-                else:
-                    is_vulnerability, reason = False, "Unpack error"
+                        if is_vulnerability:
+                            logger.debug('[CVI-{cvi}] [RET] Found {code}'.format(cvi=self.sr.svid, code=reason))
+                            vulnerability.analysis = reason
+                            vulnerability.chain = data
+                            self.rule_vulnerabilities.append(vulnerability)
 
-                if is_vulnerability:
-                    logger.debug('[CVI-{cvi}] [RET] Found {code}'.format(cvi=self.sr.svid, code=reason))
-                    vulnerability.analysis = reason
-                    vulnerability.chain = data
-                    self.rule_vulnerabilities.append(vulnerability)
-                else:
-                    if reason == 'New Core':  # 新的规则
+                        else:
+                            if reason == 'New Core':  # 新的规则
 
-                        logger.debug('[CVI-{cvi}] [NEW-VUL] New Rules init'.format(cvi=self.sr.svid))
-                        new_rule_vulnerabilities = NewCore(self.sr, self.target_directory, data, self.files, 0,
-                                                           languages=self.languages, tamper_name=self.tamper_name,
-                                                           is_unconfirm=self.is_unconfirm,
-                                                           newcore_function_list=self.newcore_function_list)
+                                logger.debug('[CVI-{cvi}] [NEW-VUL] New Rules init'.format(cvi=self.sr.svid))
+                                new_rule_vulnerabilities = NewCore(self.sr, self.target_directory, data, self.files, 0,
+                                                                   languages=self.languages, tamper_name=self.tamper_name,
+                                                                   is_unconfirm=self.is_unconfirm,
+                                                                   newcore_function_list=self.newcore_function_list)
 
-                        if len(new_rule_vulnerabilities) > 0:
-                            self.rule_vulnerabilities.extend(new_rule_vulnerabilities)
+                                if len(new_rule_vulnerabilities) > 0:
+                                    self.rule_vulnerabilities.extend(new_rule_vulnerabilities)
+
+                            else:
+                                logger.debug('Not vulnerability: {code}'.format(code=reason))
+
+                    elif len(d) == 2:
+                        is_vulnerability, reason = d
 
                     else:
-                        logger.debug('Not vulnerability: {code}'.format(code=reason))
+                        is_vulnerability, reason = False, "Unpack error"
+
             except Exception:
                 raise
+        #self.sr 是single rule的信息
         logger.debug('[CVI-{cvi}] {vn} Vulnerabilities: {count}'.format(cvi=self.sr.svid, vn=self.sr.vulnerability,
                                                                         count=len(self.rule_vulnerabilities)))
         return self.rule_vulnerabilities
 
+    #将结果存储到VulnerabilityResult结构中
     def parse_match(self, single_match):
         mr = VulnerabilityResult()
         # grep result
@@ -798,8 +817,8 @@ class Core(object):
         """
         self.method = 0
         self.code_content = self.code_content
-        if len(self.code_content) > 512:
-            self.code_content = self.code_content[:500]
+        # if len(self.code_content) > 512:
+        #     self.code_content = self.code_content[:500]
         self.status = self.status_init
         self.repair_code = self.repair_code_init
         if self.is_white_list():
@@ -856,30 +875,34 @@ class Core(object):
                         # with open(self.file_path, 'r') as fi:
                         # fi = codecs.open(self.file_path, "r", encoding='utf-8', errors='ignore')
                         # code_contents = fi.read()
+                        #只看第一条结果！？
                         result = php_scan_parser(rule_match, self.line_number, self.file_path,
                                                  repair_functions=self.repair_functions,
                                                  controlled_params=self.controlled_list, svid=self.cvi)
                         logger.debug('[AST] [RET] {c}'.format(c=result))
                         if len(result) > 0:
-                            if result[0]['code'] == 1:  # 函数参数可控
-                                return True, 'Function-param-controllable', result[0]['chain']
+                            res = []
+                            for r in result:
+                                if r['code'] == 1:  # 函数参数可控
+                                    res.append((True, 'Function-param-controllable', r['chain']))
 
-                            elif result[0]['code'] == 2:  # 漏洞修复
-                                return False, 'Function-param-controllable but fixed', result[0]['chain']
+                                elif r['code'] == 2:  # 漏洞修复
+                                    res.append((False, 'Function-param-controllable but fixed', r['chain']))
 
-                            elif result[0]['code'] == 3:  # 疑似漏洞
-                                if self.is_unconfirm:
-                                    return True, 'Unconfirmed Function-param-controllable', result[0]['chain']
-                                else:
-                                    return False, 'Unconfirmed Function-param-controllable', result[0]['chain']
+                                elif r['code'] == 3:  # 疑似漏洞
+                                    if self.is_unconfirm:
+                                        res.append((True, 'Unconfirmed Function-param-controllable', r['chain']))
+                                    else:
+                                        res.append((False, 'Unconfirmed Function-param-controllable', r['chain']))
 
-                            elif result[0]['code'] == -1:  # 函数参数不可控
-                                return False, 'Function-param-uncon', result[0]['chain']
+                                elif r['code'] == -1:  # 函数参数不可控
+                                    res.append((False, 'Function-param-uncon', r['chain']))
 
-                            elif result[0]['code'] == 4:  # 新规则生成
-                                return False, 'New Core', result[0]['source']
+                                elif r['code'] == 4:  # 新规则生成
+                                    res.append((False, 'New Core', r['source']))
 
-                            logger.debug('[AST] [CODE] {code}'.format(code=result[0]['code']))
+                                    logger.debug('[AST] [CODE] {code}'.format(code=r['code']))
+                            return res
                         else:
                             logger.debug(
                                 '[AST] Parser failed / vulnerability parameter is not controllable {r}'.format(
@@ -1214,7 +1237,7 @@ def NewCore(old_single_rule, target_directory, new_rules, files, count=0, langua
                 logger.debug('[CVI-{cvi}] [RET] Found {code}'.format(cvi="00000", code=reason))
                 vulnerability.analysis = reason
                 vulnerability.chain = data
-                rule_vulnerabilities.append(vulnerability)
+                rule_vulnerabilities.append(vulnerability)#rule_vulnerabilities是要返回的扫描结果
             else:
                 if reason == 'New Core':  # 新的规则
                     logger.debug('[CVI-{cvi}] [NEW-VUL] New Rules init'.format(cvi=sr.svid))

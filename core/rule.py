@@ -63,7 +63,7 @@ class Rule(object):
             if not os.path.exists(self.rules_path):
                 logger.error("[INIT][RULE] language {} can't found rules".format(self.rules_path))
                 os.mkdir(self.rules_path)
-
+            #列出rules/php下所有文件
             self.rule_list = self.list_parse()
 
             # import function from rule

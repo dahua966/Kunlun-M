@@ -391,7 +391,7 @@ def is_controllable(expr, flag=None):  # 获取表达式中的变量，看是否
         if expr.name in is_controlled_params:
             logger.debug('[AST] is_controllable --> {expr}'.format(expr=expr.name))
             return 1, expr
-
+        # 未知情况？
         return 3, expr
 
     if isinstance(expr, php.Variable):
@@ -412,7 +412,7 @@ def is_controllable(expr, flag=None):  # 获取表达式中的变量，看是否
         pass
     except:
         raise
-
+    #出错
     return -1, php.Variable(expr)
 
 
@@ -494,9 +494,6 @@ def array_back(param, nodes, vul_function=None, file_path=None, isback=None):  #
     """
     param_name = param.node.name
     param_expr = param.expr
-
-    # print(param_name)
-    # print(param_expr)
 
     is_co = 3
     cp = param
@@ -679,13 +676,9 @@ def parameters_back(param, nodes, function_params=None, lineno=0,
         return is_co, cp, expr_lineno
 
     if isinstance(param, php.ArrayOffset):  # 当污点为数组时，递归进入寻找数组声明或赋值
-        logger.debug("[AST] AST analysis for ArrayOffset in line {}".format(param.lineno))
-        # is_co, cp, expr_lineno = array_back(param, nodes, file_path=file_path, isback=isback)
-
-        param = param.node
-        param_name = param.name
-
-        is_co, cp = is_controllable(param)
+        logger.debug("[AST] AST analysis for ArrayOffset  in line {}".format(param.lineno))
+        is_co, cp, expr_lineno = array_back(param, nodes, file_path=file_path, isback=isback)
+        return is_co, cp, expr_lineno
 
     if isinstance(param, php.New) or (
                 hasattr(param, "name") and isinstance(param.name, php.New)):  # 当污点为新建类事，进入类中tostring函数分析
@@ -1352,6 +1345,7 @@ def anlysis_params(param, file_path, vul_lineno, vul_function=None, repair_funct
         param = param.name
 
     # 这里需要重新梳理参数的判断问题
+    #如果变量里面没有$，则用户不可控
     if type(param) is str:
         if not param.startswith("$"):
             is_co = -1
@@ -1367,18 +1361,19 @@ def anlysis_params(param, file_path, vul_lineno, vul_function=None, repair_funct
     code = "find param {}".format(param)
     scan_chain.append(('NewFind', code, file_path, vul_lineno))
 
+    #漏洞点之前的语句全放到vul_nodes里面
     vul_nodes = []
     for node in all_nodes:
         if node is not None and node.lineno <= int(vul_lineno):
             vul_nodes.append(node)
-
+    #is_co 是否可控 1: 2: 3: 4：来自函数参数
     is_co, cp, expr_lineno = deep_parameters_back(param, vul_nodes, function_params, count, file_path, vul_lineno,
                                                   vul_function=vul_function)
 
     return is_co, cp, expr_lineno, scan_chain
 
 
-def anlysis_function(node, back_node, vul_function, function_params, vul_lineno, file_path=None):
+def anlysis_function(node, back_node, vul_function, function_params, vul_lineno, file_path=None, usf=None):
     """
     对用户自定义的函数进行分析-->获取函数入参-->入参用经过赋值流程，进入sink函数-->此自定义函数为危险函数
     :param file_path: 
@@ -1391,12 +1386,15 @@ def anlysis_function(node, back_node, vul_function, function_params, vul_lineno,
     """
     global scan_results
     try:
+        para_list = []
         if node.name == vul_function and int(node.lineno) == int(vul_lineno):  # 函数体中存在敏感函数，开始对敏感函数前的代码进行检测
 
             for param in node.params:
+
                 if isinstance(param.node, php.Variable):
                     analysis_variable_node(param.node, back_node, vul_function, vul_lineno, function_params,
                                            file_path=file_path)
+                    para_list.append(param.node.name)
 
                 if isinstance(param.node, php.FunctionCall):
                     analysis_functioncall_node(param.node, back_node, vul_function, vul_lineno, function_params,
@@ -1409,6 +1407,24 @@ def anlysis_function(node, back_node, vul_function, function_params, vul_lineno,
                 if isinstance(param.node, php.ArrayOffset):
                     analysis_arrayoffset_node(param.node, vul_function, vul_lineno)
 
+        #检查是否调用了用户自义定的危险函数
+        if not usf:
+            return para_list
+        for i in usf:
+            print("this vul func:", vul_function)
+            print(i)#(origin_vul_func,usr_defined_vul_func,vul_para_list)
+            if i[0] == vul_function and i[1] == node.name:
+                for vpl in i[2]:
+                    tparam = node.params[vpl]
+                    if isinstance(tparam.node, php.Variable):
+                        #print("usr defined vul func:", node.name, "sink params:", tparam.node)
+                        is_co, cp, expr_lineno, chain = analysis_variable_node(tparam.node, back_node, node.name, vul_lineno, function_params,
+                                               file_path=file_path)
+                        print("is_co:\n",is_co, "cp:\n", cp, "expr_lineno:\n",expr_lineno, "chain:\n", chain)
+                #如果没有自义定的危险函数没有参数
+                set_scan_results((is_co, cp, expr_lineno, vul_function, param, vul_lineno))
+
+        return para_list
     except Exception as e:
         logger.debug(traceback.format_exc())
 
@@ -1573,9 +1589,10 @@ def analysis_variable_node(node, back_node, vul_function, vul_lineno, function_p
         count = 0
         is_co, cp, expr_lineno = deep_parameters_back(node, back_node, function_params, count, file_path,
                                                       vul_function=vul_function)
+        chain = []
 
     set_scan_results(is_co, cp, expr_lineno, vul_function, param, vul_lineno)
-
+    return [is_co, cp, expr_lineno, chain]
 
 def analysis_ternaryop_node(node, back_node, vul_function, vul_lineno, function_params=None, file_path=None,
                             repair_functions=[]):
@@ -1753,15 +1770,16 @@ def analysis_eval(node, vul_function, back_node, vul_lineno, function_params=Non
     :param back_node:
     :param vul_lineno:
     :param function_params:
-    :return:
+    :return: 参数来源
     """
     global scan_results
 
     if vul_function == 'eval' and int(node.lineno) == int(vul_lineno):
 
         if isinstance(node.expr, php.Variable):
-            analysis_variable_node(node.expr, back_node, vul_function, vul_lineno, function_params, file_path=file_path)
-
+            #node.expr是eval的变量值
+            res = analysis_variable_node(node.expr, back_node, vul_function, vul_lineno, function_params, file_path=file_path)
+            #print("analysis_variable_node", res)
         if isinstance(node.expr, php.FunctionCall) or isinstance(node.expr, php.MethodCall) or isinstance(node.expr, php.StaticMethodCall):
             analysis_functioncall_node(node.expr, back_node, vul_function, vul_lineno, function_params,
                                        file_path=file_path)
@@ -1780,6 +1798,7 @@ def analysis_eval(node, vul_function, back_node, vul_lineno, function_params=Non
             nodes = get_silence_params(node.expr)
             analysis(nodes, vul_function, back_node, vul_lineno, file_path)
 
+    return node.expr.name
 
 def analysis_file_inclusion(node, vul_function, back_node, vul_lineno, function_params=None, file_path=None):
     """
@@ -1843,9 +1862,10 @@ def set_scan_results(is_co, cp, expr_lineno, sink, param, vul_lineno):
     if result['code'] > 0:  # 查出来漏洞结果添加到结果信息中
         results.append(result)
         scan_results += results
+        #print(scan_results)
 
 
-def analysis(nodes, vul_function, back_node, vul_lineno, file_path=None, function_params=None):
+def analysis(nodes, vul_function, back_node, vul_lineno, file_path=None, function_params=None, in_func=None):
     """
     调用FunctionCall-->analysis_functioncall分析调用函数是否敏感
     :param nodes: 所有节点
@@ -1856,20 +1876,29 @@ def analysis(nodes, vul_function, back_node, vul_lineno, file_path=None, functio
     :param file_path: 当前分析文件的地址
     :return:
     """
+    global usr_sink_func
     buffer_ = []
     for node in nodes:
 
         # 检查line范围，以快速锁定参数
-        if vul_lineno < node.lineno:
-            break
+        #if vul_lineno < node.lineno:
+        #    break
 
+        #要判断是不是用户自义定的危险函数调用
+        #要返回危险函数调用的参数名
         if isinstance(node, php.FunctionCall) or isinstance(node, php.MethodCall) or isinstance(node, php.StaticMethodCall):
             # 函数直接调用，不进行赋值
-            anlysis_function(node, back_node, vul_function, function_params, vul_lineno, file_path=file_path)
+            para_list = anlysis_function(node, back_node, vul_function, function_params, vul_lineno, file_path=file_path, usf=usr_sink_func)
+            if in_func and vul_function == node.name:
+                # 添加自义定漏洞函数 (原漏洞类型，用户自义定的函数名，漏洞参数数组)
+                vul_para = []
+                for pl in para_list:
+                    vul_para.append(function_params.index(pl))
+                usr_sink_func.append((vul_function, in_func, vul_para))
+                print("[*]usr_sink_func\n", usr_sink_func)
 
-        elif isinstance(node, php.Assignment):  # 函数调用在赋值表达式中
-            if isinstance(node.expr, php.FunctionCall) or isinstance(node.expr, php.MethodCall) or isinstance(node.expr,
-                                                                                                              php.StaticMethodCall):
+        elif isinstance(node, php.Assignment):  # node.expr是赋值语句右侧
+            if isinstance(node.expr, php.FunctionCall) or isinstance(node.expr, php.MethodCall) or isinstance(node.expr, php.StaticMethodCall):
                 anlysis_function(node.expr, back_node, vul_function, function_params, vul_lineno, file_path=file_path)
 
             if isinstance(node.expr, php.Eval):
@@ -1889,8 +1918,13 @@ def analysis(nodes, vul_function, back_node, vul_lineno, file_path=None, functio
             nodes = get_silence_params(node)
             analysis(nodes, vul_function, back_node, vul_lineno, file_path)
 
+        #eval函数来了
         elif isinstance(node, php.Eval):
-            analysis_eval(node, vul_function, back_node, vul_lineno, function_params, file_path=file_path)
+            sink_var = analysis_eval(node, vul_function, back_node, vul_lineno, function_params, file_path=file_path)
+            if in_func and vul_function == 'eval':
+                # 添加自义定漏洞函数 (原漏洞类型，用户自义定的函数名，漏洞参数数组)
+                usr_sink_func.append((vul_function, in_func, [function_params.index(sink_var)]))
+                #print((usr_sink_func))
 
         elif isinstance(node, php.Include) or isinstance(node, php.Require):
             analysis_file_inclusion(node, vul_function, back_node, vul_lineno, function_params, file_path=file_path)
@@ -1909,16 +1943,18 @@ def analysis(nodes, vul_function, back_node, vul_lineno, file_path=None, functio
         elif isinstance(node, php.Try):
             analysis_try(node, back_node, vul_function, vul_lineno, function_params, file_path=file_path)
 
+        #如果是函数
         elif isinstance(node, php.Function) or isinstance(node, php.Method):
             function_body = []
-            function_params = get_function_params(node.params)
+            function_params = get_function_params(node.params)#返回列表
             analysis(node.nodes, vul_function, function_body, vul_lineno, function_params=function_params,
-                     file_path=file_path)
+                     file_path=file_path, in_func=node.name)
 
         elif isinstance(node, php.Class):
             analysis(node.nodes, vul_function, back_node, vul_lineno, file_path, function_params)
-
+        #一个函数的分析结束后会向back_node中添加内容
         back_node.append(node)
+
 
 
 def scan_parser(sensitive_func, vul_lineno, file_path, repair_functions=[], controlled_params=[], svid=0):
@@ -1928,19 +1964,20 @@ def scan_parser(sensitive_func, vul_lineno, file_path, repair_functions=[], cont
     :param controlled_params:
     :param repair_functions: 
     :param sensitive_func: 要检测的敏感函数,传入的为函数列表
-    :param vul_lineno: 漏洞函数所在行号
+    :param vul_lineno: 漏洞函数所在行号,直接提前锁定了
     :param file_path: 文件路径
     :return:
     """
     try:
-        global scan_results, is_repair_functions, is_controlled_params, scan_chain
+        global scan_results, is_repair_functions, is_controlled_params, scan_chain, usr_sink_func
 
         scan_chain = ['start']
         scan_results = []
+        usr_sink_func = []
         is_repair_functions = repair_functions
         is_controlled_params = controlled_params
         all_nodes = ast_object.get_nodes(file_path)
-
+        #print(all_nodes)
         for func in sensitive_func:  # 循环判断代码中是否存在敏感函数，若存在，递归判断参数是否可控;对文件内容循环判断多次
             back_node = []
             analysis(all_nodes, func, back_node, int(vul_lineno), file_path, function_params=None)
